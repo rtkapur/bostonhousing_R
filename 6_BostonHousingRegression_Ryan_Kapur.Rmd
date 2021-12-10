@@ -1,7 +1,6 @@
 ---
-title: "6 - Boston Housing"
+title: "Boston Housing"
 author  : "Ryan Kapur"
-date    : "8/18/2021" 
 output: 
   html_document:
     toc: true
@@ -29,14 +28,13 @@ options(scipen = 999)
 ```
 
 ```{r, message = FALSE}
-boston <- read_csv("C:\\Users\\ryant\\Documents\\HW\\R\\boston.csv") %>%
+boston <- read_csv("boston.csv") %>%
   clean_names()
 
-zips <- read_csv("C:\\Users\\ryant\\Documents\\HW\\R\\zips.csv") %>%
+zips <- read_csv("zips.csv") %>%
   clean_names()
 
 head(boston, 10)
-zips
 ```
 
 # Explore Target & Transform
@@ -205,8 +203,6 @@ cor_zboston <- zboston %>%
   cor() %>%
   as.data.frame() %>%
   rownames_to_column(var = "variable")
-
-cor_zboston
 ```
 
 ```{r}
@@ -230,7 +226,7 @@ cor_zboston %>%
 
 # Explore Categorical Predictors 
 
-> Select 4 categorical variables and create bar charts to evaluate mean av_total among each of them.
+> Select categorical variables and create bar charts to evaluate mean av_total among each of them.
 
 ```{r, message = FALSE, warning = FALSE}
 zboston %>%
@@ -442,16 +438,6 @@ scored_test_rf <- predict(random_forest, bake_test) %>%
 scored_test_rf
 ```
 
-### Full Model
-
-```{r}
-model_evaluation <- bind_rows(scored_train_lm, scored_test_lm, scored_train_rf, scored_test_rf)
-
-model_evaluation %>%
-  group_by(.model, .part) %>%
-  count()
-```
-
 # 5. Evaluate
 
 ## Metrics
@@ -516,7 +502,7 @@ scored_test_rf %>%
   slice_max(abs(.res), n = 5)
 ```
 
-# Model Analysis for Executive Summary
+# Model Analysis
 
 ## Residual Summaries
 
