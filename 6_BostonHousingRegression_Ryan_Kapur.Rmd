@@ -1,0 +1,767 @@
+---
+title: "6 - Boston Housing"
+author  : "Ryan Kapur"
+date    : "8/18/2021" 
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: paper
+    highlight: tango
+    df_print: paged
+---
+
+# Libraries & Import
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(tidymodels)
+library(ranger)
+library(vip)
+library(janitor)
+library(recipes)
+library(rsample)
+library(modeldata)
+```
+
+```{r, include = FALSE}
+options(scipen = 999)
+```
+
+```{r, message = FALSE}
+boston <- read_csv("C:\\Users\\ryant\\Documents\\HW\\R\\boston.csv") %>%
+  clean_names()
+
+zips <- read_csv("C:\\Users\\ryant\\Documents\\HW\\R\\zips.csv") %>%
+  clean_names()
+
+head(boston, 10)
+zips
+```
+
+# Explore Target & Transform
+
+> Find the average total assessed value (av_total).
+
+```{r}
+boston %>%
+  summarize(avg_av_total = mean(av_total, na.rm = TRUE))
+```
+
+> Create a histogram and boxplot for av_total.
+
+```{r, message = FALSE}
+boston %>%
+  ggplot(aes(x = av_total)) +
+  geom_histogram(aes(y = ..density..), bins = 42) +
+  stat_function(fun = dnorm,
+                color = "blue", 
+                args = list(mean = mean(boston$av_total, na.rm = TRUE),
+                            sd = sd(boston$av_total, na.rm = TRUE))) +
+  labs(title = "Boston Housing",
+       subtitle = "Total Assessed Value Distribution",
+       x = "Total Assessed Value",
+       y = "Count")
+```
+
+```{r}
+boston %>%
+  ggplot(aes(x = av_total)) +
+  geom_boxplot() +
+  labs(title = "Boston Housing",
+       subtitle = "Total Assessed Value Distribution",
+       x = "Total Assessed Value, $")
+```
+
+```{r, include = FALSE}
+zips %>%
+  mutate(zip = as.integer(zip))
+```
+
+> Join the two datasets and create a variable, home_age, using conditional logic.
+
+```{r}
+zboston <- inner_join(boston, zips, by = c("zipcode" = "zip")) %>%
+  mutate(home_age = if_else(yr_remod > yr_built,
+                            (age = 2020 - yr_remod),
+                            (age = 2020 - yr_built)))
+
+zboston
+```
+
+# Explore Numeric Predictors 
+
+> Create histograms for av_total, land_sf, living_area, and home_age.
+
+```{r, message = FALSE}
+# nrows <- nrow(zboston)
+# floor((nrows ^ (1/3)) * 2)
+# Rice rule - number of bins = 42
+
+predictor_chart <- function(predictor) {
+  chart <- ggplot(zboston, aes(x = predictor)) +
+    geom_histogram(aes(y = ..density..), bins = 42) +
+    stat_function(fun = dnorm,
+                  color = "blue", 
+                  args = list(mean = mean(predictor, na.rm = TRUE),
+                              sd = sd(predictor, na.rm = TRUE)))
+  return(chart)
+}
+```
+
+```{r, message = FALSE, warning = FALSE}
+predictor_chart(zboston$av_total) +
+  labs(title = "Total Assessed Value Distribution",
+       x = "Total Assessed Value, $",
+       y = "Count")
+
+predictor_chart(zboston$land_sf) +
+  labs(title = "Land Square Footage Distribution",
+       x = "Sq. Ft.",
+       y = "Count")
+
+predictor_chart(zboston$living_area) +
+  labs(title = "Living Space Area Distribution",
+       x = "Living Space Area",
+       y = "Count")
+
+predictor_chart(zboston$home_age) +
+  labs(title = "Age of Home Distribution",
+       x = "Age of Home",
+       y = "Count")
+```
+
+**Three of our four variables (av_total, land_sf, living_area) appear roughly normal but with significant positive skew in each. The fourth variable (home_age) appears to be bimodal and not very close to normal.**
+
+> Take the log of each variable to evaluate any change in each distribution towards normality.
+
+```{r}
+log_chart <- function(predictor) {
+  chart <- ggplot(zboston, aes(x = log(predictor))) +
+    geom_histogram(aes(y = ..density..), bins = 42) +
+    stat_function(fun = dnorm,
+                  color = "blue", 
+                  args = list(mean = mean(log(predictor), na.rm = TRUE),
+                              sd = sd(log(predictor), na.rm = TRUE)))
+  return(chart)
+}
+```
+
+```{r, message = FALSE, warning = FALSE}
+log_chart(zboston$av_total) +
+  labs(title = "Log of Total Assessed Value Distribution",
+       x = "Log Total Assessed Value",
+       y = "Count")
+
+log_chart(zboston$land_sf) +
+  labs(title = "Log of Land Square Footage Distribution",
+       x = "Log Sq. Ft.",
+       y = "Count")
+
+log_chart(zboston$living_area) +
+  labs(title = "Log of Living Space Area Distribution",
+       x = "Log Living Space Area",
+       y = "Count")
+
+log_chart(zboston$home_age) +
+  labs(title = "Log of Age of Home Distribution",
+       x = "Log Age of Home",
+       y = "Count")
+```
+
+**The log transformations of our three variables (av_total, land_sf, living_area) make each distribution appear much closer to normal, taking out much of the skew in each and moving each closer to being symmetrical. Our fourth variable (home_age) again does not appear to be normal.**
+
+> Create a bar chart for average total assessed value by city.
+
+```{r}
+zboston %>%
+  group_by(city_state) %>%
+  summarize(avg_av_total = mean(av_total, na.rm = TRUE)) %>%
+  ggplot(aes(reorder(city_state, avg_av_total), avg_av_total)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(zboston$av_total, na.rm = TRUE),
+             linetype = "dashed",
+             color = "red",
+             size = 2) +
+  labs(x = "City",
+       y = "Avg. Total Assessed Value, $",
+       title = "Average Home Value by City",
+       subtitle = "MA") +
+  scale_y_continuous(labels = comma) +
+  coord_flip()
+```
+
+# Correlations
+
+> Create a correlation matrix for av_total, land_sf, living_area, and home_age.
+
+```{r}
+cor_zboston <- zboston %>%
+  na.omit() %>%
+  select(av_total,
+         land_sf,
+         living_area,
+         home_age) %>%
+  cor() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "variable")
+
+cor_zboston
+```
+
+```{r}
+cor_zboston %>%
+  pivot_longer(cols = c("av_total",
+                      "land_sf",
+                      "living_area",
+                      "home_age"), 
+               names_to = "name", 
+               values_to = "correlation" ) %>%
+  ggplot(aes(x = variable, y = name, fill = correlation)) +
+  geom_tile() +
+  labs(title = "Correlation Matrix",
+       x = "Variable",
+       y = "Variable") +
+  scale_fill_gradient2(mid = "#FBFEF9",
+                       low = "#0C6291",
+                       high = "#A63446") +
+  geom_text(aes(label = round(correlation, 3)), color = "Black")
+```
+
+# Explore Categorical Predictors 
+
+> Select 4 categorical variables and create bar charts to evaluate mean av_total among each of them.
+
+```{r, message = FALSE, warning = FALSE}
+zboston %>%
+  group_by(r_bldg_styl) %>%
+  summarize(avg_av_total = mean(av_total, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(r_bldg_styl, avg_av_total), y = avg_av_total)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(zboston$av_total, na.rm = TRUE),
+             linetype = "dashed",
+             color = "red",
+             size = 2) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Avg. Assessed Value by Residential Building Style",
+       x = "Building Style",
+       y = "Avg. Assessed Value, $") +
+  coord_flip()
+
+zboston %>%
+  group_by(r_view) %>%
+  summarize(avg_av_total = mean(av_total, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(r_view, avg_av_total), y = avg_av_total)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(zboston$av_total, na.rm = TRUE),
+             linetype = "dashed",
+             color = "red",
+             size = 2) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Avg. Assessed Value by Residential View Rating",
+       x = "View Rating",
+       y = "Avg. Assessed Value, $") +
+  coord_flip()
+
+zboston %>%
+  group_by(r_ovrall_cnd) %>%
+  summarize(avg_av_total = mean(av_total, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(r_ovrall_cnd, avg_av_total), y = avg_av_total)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(zboston$av_total, na.rm = TRUE),
+             linetype = "dashed",
+             color = "red",
+             size = 2) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Avg. Assessed Value by Residential Overall Condition",
+       x = "Overall Condition",
+       y = "Avg. Assessed Value, $") +
+  coord_flip()
+
+zboston %>%
+  group_by(r_int_cnd) %>%
+  summarize(avg_av_total = mean(av_total, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(r_int_cnd, avg_av_total), y = avg_av_total)) +
+  geom_bar(stat = "identity") +
+  geom_hline(yintercept = mean(zboston$av_total, na.rm = TRUE),
+             linetype = "dashed",
+             color = "red",
+             size = 2) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Avg. Assessed Value by Interior Condition Rating",
+       x = "Interior Condition",
+       y = "Avg. Assessed Value, $") +
+  coord_flip()
+```
+
+# 1. Prepare & Partition Data
+
+```{r}
+prep_zboston <- zboston %>%
+  select(pid,
+         av_total,
+         home_age,
+         land_sf,
+         living_area,
+         num_floors,
+         population,
+         median_income,
+         city_state,
+         r_bldg_styl,
+         r_view,
+         r_ovrall_cnd,
+         r_int_cnd) %>%
+  mutate_at(c("city_state",
+              "r_bldg_styl",
+              "r_view",
+              "r_ovrall_cnd",
+              "r_int_cnd"),
+             as.factor)
+
+prep_zboston
+```
+
+```{r}
+set.seed(42)
+train_test_split <- initial_split(prep_zboston, prop = 0.7)
+
+train <- training(train_test_split)
+test <- testing(train_test_split)
+
+train_pct <- (nrow(train) / nrow(prep_zboston))
+test_pct <- (nrow(test) / nrow(prep_zboston))
+
+paste0(round((train_pct * 100), 1), "% train, ",
+       round((test_pct * 100), 1), "% test")
+```
+
+# 2. Recipe & Bake
+
+```{r}
+rec_zboston <- recipe(av_total ~ ., data = train) %>%
+  step_rm(pid) %>%
+  step_impute_mean(all_numeric(), -all_outcomes()) %>%
+  step_log(all_outcomes(), skip = TRUE) %>%
+  step_unknown(all_nominal()) %>%
+  step_dummy(all_nominal())
+```
+
+```{r}
+bake_train <- bake(rec_zboston %>% prep(), train)
+bake_test  <- bake(rec_zboston %>% prep(), test)
+```
+
+# 3. Create and Fit Models - Linear Regression & Random Forest
+
+```{r, warning = FALSE}
+linear_reg <- linear_reg() %>%   
+  set_engine("lm") %>%
+  set_mode("regression") %>%
+  fit(av_total ~. , data = juice(prep(rec_zboston)))
+  
+random_forest <- rand_forest(trees = 25) %>%
+  set_mode("regression") %>%
+  set_engine("ranger",  importance = "permutation") %>%
+  fit(av_total ~., data = bake_train)
+```
+
+## Evaluate Fit of Linear Regression 
+
+```{r}
+glance(linear_reg)
+```
+
+**R-square is approximately 0.79**
+
+```{r, warning = FALSE}
+tidy(linear_reg) %>%
+  mutate(across(is.numeric, round, 3))
+```
+
+### Predictors, p-value > 0.05
+
+```{r}
+tidy(linear_reg) %>%
+  mutate(across(is.numeric, round, 3)) %>%
+  filter(p.value > 0.05)
+```
+
+# 4. Prep for Evaluation
+
+## Attaching Predicted Values
+
+### Linear Regression Model - Training
+
+```{r, warning = FALSE}
+scored_train_lm <- predict(linear_reg, bake_train) %>%
+  mutate(.pred = exp(.pred)) %>%
+  bind_cols(train) %>%
+  mutate(.res = av_total - .pred,
+         .model = "linear reg",
+         .part = "train")
+
+scored_train_lm
+```
+
+### Linear Regression Model - Test
+
+```{r, warning = FALSE}
+scored_test_lm <- predict(linear_reg, bake_test) %>%
+  mutate(.pred = exp(.pred)) %>%
+  bind_cols(test) %>%
+  mutate(.res = av_total - .pred,
+         .model = "linear reg",
+         .part = "test")
+
+scored_test_lm
+```
+
+### Random Forest - Training
+
+```{r}
+scored_train_rf <- predict(random_forest, bake_train) %>%
+#  mutate(.pred = exp(.pred)) %>%
+  bind_cols(train) %>%
+  mutate(.res = av_total - .pred,
+         .model = "random forest",
+         .part = "train")
+
+scored_train_rf
+```
+
+### Random Forest - Test
+
+```{r}
+scored_test_rf <- predict(random_forest, bake_test) %>%
+ # mutate(.pred = exp(.pred)) %>%
+  bind_cols(test) %>%
+  mutate(.res = av_total - .pred,
+         .model = "random forest",
+         .part = "test")
+
+scored_test_rf
+```
+
+### Full Model
+
+```{r}
+model_evaluation <- bind_rows(scored_train_lm, scored_test_lm, scored_train_rf, scored_test_rf)
+
+model_evaluation %>%
+  group_by(.model, .part) %>%
+  count()
+```
+
+# 5. Evaluate
+
+## Metrics
+
+```{r}
+model_evaluation %>%
+  group_by(.model, .part) %>%
+  metrics(av_total, estimate = .pred) %>%
+  pivot_wider(names_from = .metric, values_from = .estimate) %>%
+  select(-.estimator)
+```
+
+**The random forest produced an r-square of approximately 0.87 on the training set and 0.82 on the test set. The linear regression model produced an r-square of approximately 0.81 on the training set and 0.69 on the test set. The error for each set of each model varied from around 54,000 (rf training) up to 88,692.73 (lm test). The random forest produced a lower error on its test set with an MSE of around 65k, almost as low an RMSE as the linear model produced on its training set.**
+
+## Variable Importance - Linear Regression Model
+
+```{r}
+linear_reg %>%
+  vip(num_features = 20)
+```
+
+## Variable Importance - Random Forest
+
+```{r}
+random_forest %>%
+  vip(num_features = 20)
+```
+
+## Analysis
+
+**In both the linear regression model and the random forest, living_area and median_income ranked as the 2 most important variables. Hype Park from city_state, population, and land_sf made the Top 6 in each model. Num_floors was the tenth most important variable in the random forest but was the third least important variable in the linear regression model.**
+
+**Based on the metrics, the random forest seems to be a better model since the RMSE is lower and the R-square is higher than those of the linear model.**
+
+# 6. Evaluating Maximum and Minimum Residuals
+
+## Best Predictions - Linear Regression Model
+
+```{r}
+scored_test_lm %>%
+  slice_min(abs(.res), n = 5)
+```
+
+## Worst Predictions - Linear Regression Model
+
+```{r}
+scored_test_lm %>%
+  slice_max(abs(.res), n = 5)
+```
+
+## Best Predictions - Random Forest
+
+```{r}
+scored_test_rf %>%
+  slice_min(abs(.res), n = 5)
+```
+
+## Worst Predictions - Random Forest
+
+```{r}
+scored_test_rf %>%
+  slice_max(abs(.res), n = 5)
+```
+
+# Model Analysis for Executive Summary
+
+## Residual Summaries
+
+### Linear Model
+
+```{r}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  summarize(mean_res = mean(.res, na.rm = TRUE),
+            median_res = median(.res, na.rm = TRUE),
+            abs_mean = mean(abs(.res), na.rm = TRUE),
+            abs_median = median(abs(.res), na.rm = TRUE),
+            min_res = min(abs(.res), na.rm = TRUE),
+            max_res = max(abs(.res), na.rm = TRUE))
+```
+
+### Random Forest
+
+```{r}
+scored_test_rf %>%
+  group_by(city_state) %>%
+  summarize(mean_res = mean(.res, na.rm = TRUE),
+            median_res = median(.res, na.rm = TRUE),
+            abs_mean = mean(abs(.res), na.rm = TRUE),
+            abs_median = median(abs(.res), na.rm = TRUE),
+            min_res = min(abs(.res), na.rm = TRUE),
+            max_res = max(abs(.res), na.rm = TRUE))
+```
+
+## Linear Model
+
+### Mean Absolute Residuals
+
+```{r}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  summarize(mean_res = mean(abs(.res), na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(city_state, -mean_res), y = mean_res)) +
+  geom_bar(stat = "identity") +
+  labs(subtitle = "Linear Model",
+       title = "Mean Absolute Residuals by City",
+       x = "City",
+       y = "Mean of Absolute Residuals") +
+  coord_flip()
+```
+
+### Median Absolute Residuals
+
+```{r}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  summarize(median_res = median(abs(.res), na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(city_state, -median_res), y = median_res)) +
+  geom_bar(stat = "identity") +
+  labs(subtitle = "Linear Model",
+       title = "Median Absolute Residuals by City",
+       x = "City",
+       y = "Median of Absolute Residuals") +
+  coord_flip()
+```
+
+### Fitted vs. Residual Plots
+
+**Hyde Park has been excluded here due to the Hyde Park outlier changing the x-y scales. See below for Hyde Park's plot.**
+
+```{r}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  filter(city_state != "Hyde Park, MA") %>%
+  ggplot(aes(x = .pred, y = .res)) +
+  geom_point() +
+  labs(title = "Fitted vs. Residuals",
+       subtitle = "Linear Model",
+       x = "Fitted Values",
+       y = "Residual") +
+  facet_wrap(~city_state) +
+  geom_hline(yintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1)
+```
+
+```{r}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  filter(city_state == "Hyde Park, MA") %>%
+  ggplot(aes(x = .pred, y = .res)) +
+  geom_point() +
+  labs(title = "Fitted vs. Residuals, Hyde Park",
+       subtitle = "Linear Model",
+       x = "Fitted Values",
+       y = "Residual",
+       caption = "Look at that outlier!") +
+  geom_hline(yintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1)
+```
+
+### Histogram of Residuals
+
+```{r, message = FALSE}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  filter(city_state != "Hyde Park, MA") %>%
+  ggplot(aes(x = .res)) +
+  geom_histogram(bins = 40) +
+  labs(title = "Residuals",
+       subtitle = "Linear Model",
+       x = "Residuals",
+       y = "Count") +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1) +
+  facet_wrap(~city_state)
+```
+
+### Histogram of Residuals, Hyde Park
+
+```{r}
+scored_test_lm %>%
+  group_by(city_state) %>%
+  filter(city_state == "Hyde Park, MA") %>%
+  ggplot(aes(x = .res)) +
+  geom_histogram(bins = 70) +
+  labs(title = "Residuals, Hyde Park",
+       subtitle = "Linear Model",
+       x = "Residuals",
+       y = "Count") +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1)
+```
+
+## Random Forest
+
+### Mean Absolute Residuals
+
+```{r}
+scored_test_rf %>%
+  group_by(city_state) %>%
+  summarize(mean_res = mean(abs(.res), na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(city_state, -mean_res), y = mean_res)) +
+  geom_bar(stat = "identity") +
+  labs(subtitle = "Random Forest",
+       title = "Mean Absolute Residuals by City",
+       x = "City",
+       y = "Mean of Absolute Residuals") +
+  coord_flip()
+```
+
+### Median Absolute Residuals
+
+```{r}
+scored_test_rf %>%
+  group_by(city_state) %>%
+  summarize(median_res = median(abs(.res), na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(city_state, -median_res), y = median_res)) +
+  geom_bar(stat = "identity") +
+  labs(subtitle = "Random Forest",
+       title = "Median Absolute Residuals by City",
+       x = "City",
+       y = "Median of Absolute Residuals") +
+  coord_flip()
+```
+
+### Fitted vs. Residual Plots
+
+```{r}
+scored_test_rf %>%
+  group_by(city_state) %>%
+  ggplot(aes(x = .pred, y = .res)) +
+  geom_point() +
+  labs(title = "Fitted vs. Residuals",
+       subtitle = "Random Forest",
+       x = "Fitted Values",
+       y = "Residual") +
+  facet_wrap(~city_state) +
+  geom_hline(yintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1)
+```
+
+### Histogram of Residuals
+
+```{r, message = FALSE}
+scored_test_rf %>%
+  group_by(city_state) %>%
+  filter(city_state != "Hyde Park, MA") %>%
+  ggplot(aes(x = .res)) +
+  geom_histogram(bins = 40) +
+  labs(title = "Residuals",
+       subtitle = "Random Forest",
+       x = "Residuals",
+       y = "Count") +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1) +
+  facet_wrap(~city_state)
+```
+
+### Histogram of Residuals, Hyde Park
+
+```{r}
+scored_test_rf %>%
+  group_by(city_state) %>%
+  filter(city_state == "Hyde Park, MA") %>%
+  ggplot(aes(x = .res)) +
+  geom_histogram(bins = 40) +
+  labs(title = "Residuals, Hyde Park",
+       subtitle = "Random Forest",
+       x = "Residuals",
+       y = "Count") +
+  geom_vline(xintercept = 0,
+             linetype = "dashed",
+             color = "red",
+             size = 1)
+```
+
+## Metrics by City
+
+### Linear Model
+
+```{r, warning = FALSE}
+predict(linear_reg, bake_test) %>%
+  bind_cols(test) %>%
+  group_by(city_state) %>%
+  metrics(av_total, estimate = .pred) %>%
+  pivot_wider(names_from = .metric, values_from = .estimate) %>%
+  select(-.estimator) %>%
+  arrange(rmse)
+```
+
+### Random Forest
+
+```{r}
+predict(random_forest, bake_test) %>%
+  bind_cols(test) %>%
+  group_by(city_state) %>%
+  metrics(av_total, estimate = .pred) %>%
+  pivot_wider(names_from = .metric, values_from = .estimate) %>%
+  select(-.estimator) %>%
+  arrange(rmse)
+```
